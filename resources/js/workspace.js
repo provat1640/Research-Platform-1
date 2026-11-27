@@ -86,6 +86,7 @@ const aiChatHistory = document.querySelector('#ai-chat-history');
 const clearAiChatButton = document.querySelector('#clear-ai-chat');
 const editorFontSize = document.querySelector('#editor-font-size');
 const editorTextColor = document.querySelector('#editor-text-color');
+const editorClearFormatButton = document.querySelector('#clear-editor-format');
 const editorPreviewButton = document.querySelector('#toggle-editor-preview');
 
 const AI_MODEL_DEFINITIONS = {
@@ -801,6 +802,7 @@ const loadWorkspace = async () => {
             updateResearchFrame(project.methodology);
         }
 
+        sanitizeEditorFormatting(editor);
         updateManuscriptStats();
         loadArchitectureAudit();
         loadEnvironmentHealth();
@@ -1057,7 +1059,236 @@ const insertFigureIntoEditor = (mediaItem) => {
     document.querySelector('#media-dialog')?.close();
 };
 
+const EDITOR_PROTECTED_SELECTOR = '.cite-ref, .paper-figure, .paper-references, .manuscript-section-rule, .paper-methodology-table';
+
+const isLightOrInvisibleColor = (value) => {
+    if (!value) return false;
+    const raw = String(value).trim().toLowerCase();
+    if (!raw) return false;
+    if (raw === 'transparent' || raw === 'inherit' || raw === 'initial' || raw === 'unset') return true;
+
+    const rgbMatch = raw.match(/^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
+    if (rgbMatch) {
+        const r = Number(rgbMatch[1]);
+        const g = Number(rgbMatch[2]);
+        const b = Number(rgbMatch[3]);
+        const alpha = rgbMatch[4] === undefined ? 1 : Number(rgbMatch[4]);
+        if (alpha < 0.6) return true;
+        return (0.299 * r + 0.587 * g + 0.114 * b) > 155;
+    }
+
+    const hexMatch = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/);
+    if (hexMatch) {
+        let hex = hexMatch[1];
+        if (hex.length === 3) {
+            hex = hex.split('').map((c) => c + c).join('');
+        }
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        return (0.299 * r + 0.587 * g + 0.114 * b) > 155;
+    }
+
+    return [
+        'white', 'snow', 'ivory', 'whitesmoke', 'ghostwhite', 'aliceblue',
+        'azure', 'mintcream', 'honeydew', 'seashell', 'linen', 'oldlace',
+        'cornsilk', 'beige', 'wheat', 'gainsboro', 'lightgray', 'lightgrey',
+        'silver', 'lightyellow', 'lightcyan', 'lavender',
+    ].includes(raw);
+};
+
+const stripElementInlineFormatting = (el, { stripAllColors = false, forceStripColor = false } = {}) => {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE || el === editor) return false;
+    if (el.closest(EDITOR_PROTECTED_SELECTOR)) return false;
+
+    const hadBg = Boolean(
+        el.style.background
+        || el.style.backgroundColor
+        || el.style.backgroundImage
+        || el.getAttribute('bgcolor'),
+    );
+
+    el.style.removeProperty('background');
+    el.style.removeProperty('background-color');
+    el.style.removeProperty('background-image');
+    el.style.removeProperty('background-clip');
+    el.style.removeProperty('-webkit-background-clip');
+    el.style.removeProperty('-webkit-text-fill-color');
+    el.style.removeProperty('text-shadow');
+    el.style.removeProperty('font-family');
+    el.style.removeProperty('font-size');
+    el.style.removeProperty('line-height');
+    el.style.removeProperty('letter-spacing');
+    el.style.removeProperty('white-space');
+    el.style.removeProperty('box-decoration-break');
+    el.removeAttribute('bgcolor');
+    el.removeAttribute('face');
+    el.removeAttribute('size');
+
+    const inlineColor = el.style.color || el.getAttribute('color') || '';
+    if (stripAllColors || forceStripColor || hadBg || isLightOrInvisibleColor(inlineColor)) {
+        el.style.removeProperty('color');
+        el.removeAttribute('color');
+    }
+
+    if (el.hasAttribute('style') && el.getAttribute('style').trim() === '') {
+        el.removeAttribute('style');
+    }
+
+    return hadBg;
+};
+
+const sanitizeEditorFormatting = (root = editor, { stripAllColors = false } = {}) => {
+    if (!root) return;
+    const bgStrippedNodes = new WeakSet();
+
+    if (root !== editor && root.nodeType === Node.ELEMENT_NODE) {
+        if (stripElementInlineFormatting(root, { stripAllColors })) {
+            bgStrippedNodes.add(root);
+        }
+    }
+
+    root.querySelectorAll('*').forEach((el) => {
+        const ancestorHadBg = Boolean(el.parentElement && (
+            bgStrippedNodes.has(el.parentElement) || (() => {
+                let p = el.parentElement;
+                while (p && p !== editor) {
+                    if (bgStrippedNodes.has(p)) return true;
+                    p = p.parentElement;
+                }
+                return false;
+            })()
+        ));
+
+        const strippedBg = stripElementInlineFormatting(el, {
+            stripAllColors,
+            forceStripColor: ancestorHadBg,
+        });
+        if (strippedBg) {
+            bgStrippedNodes.add(el);
+        }
+    });
+};
+
+const insertCleanPlainTextAtCursor = (plainText) => {
+    if (!editor) return;
+    const normalizedText = String(plainText || '').replace(/\r\n?/g, '\n');
+
+    editor.focus();
+
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0) {
+        let node = selection.getRangeAt(0).commonAncestorContainer;
+        if (node.nodeType === Node.TEXT_NODE) {
+            node = node.parentElement;
+        }
+        while (node && node !== editor) {
+            stripElementInlineFormatting(node, { stripAllColors: true });
+            node = node.parentElement;
+        }
+    }
+
+    let inserted = false;
+    try {
+        inserted = document.execCommand('insertText', false, normalizedText);
+    } catch (_) {
+        inserted = false;
+    }
+
+    if (!inserted && selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        range.deleteContents();
+        const fragment = document.createDocumentFragment();
+        const lines = normalizedText.split('\n');
+        lines.forEach((line, idx) => {
+            if (idx > 0) {
+                fragment.appendChild(document.createElement('br'));
+            }
+            if (line.length > 0) {
+                fragment.appendChild(document.createTextNode(line));
+            }
+        });
+        const lastNode = fragment.lastChild;
+        range.insertNode(fragment);
+        if (lastNode) {
+            const nextRange = document.createRange();
+            nextRange.setStartAfter(lastNode);
+            nextRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(nextRange);
+        }
+    }
+};
+
 // ================= 9. EVENT LISTENERS & CONTROLS =================
+
+// Merge pasted text formatting so it matches clean canvas style without dark backgrounds
+editor?.addEventListener('paste', (event) => {
+    const clipboard = event.clipboardData || window.clipboardData;
+    if (!clipboard) return;
+
+    let plainText = clipboard.getData('text/plain');
+    if (!plainText) {
+        const htmlData = clipboard.getData('text/html');
+        if (!htmlData) return;
+        const temp = document.createElement('div');
+        temp.innerHTML = htmlData;
+        plainText = temp.innerText || temp.textContent || '';
+    }
+
+    event.preventDefault();
+    insertCleanPlainTextAtCursor(plainText);
+    sanitizeEditorFormatting(editor);
+    updateManuscriptStats();
+});
+
+editor?.addEventListener('drop', () => {
+    setTimeout(() => {
+        sanitizeEditorFormatting(editor);
+        updateManuscriptStats();
+    }, 0);
+});
+
+editorClearFormatButton?.addEventListener('click', () => {
+    if (!editor) return;
+    const selection = window.getSelection();
+    const hasSelectionInsideEditor = Boolean(
+        selection
+        && selection.rangeCount > 0
+        && !selection.isCollapsed
+        && editor.contains(selection.anchorNode),
+    );
+
+    editor.focus();
+    if (hasSelectionInsideEditor) {
+        try {
+            document.execCommand('removeFormat', false, null);
+        } catch (_) {}
+
+        const range = selection.getRangeAt(0);
+        let container = range.commonAncestorContainer;
+        if (container.nodeType === Node.TEXT_NODE) {
+            container = container.parentElement;
+        }
+        if (container && container !== editor && editor.contains(container)) {
+            stripElementInlineFormatting(container, { stripAllColors: true });
+        }
+        editor.querySelectorAll('*').forEach((el) => {
+            try {
+                if (range.intersectsNode(el)) {
+                    stripElementInlineFormatting(el, { stripAllColors: true });
+                }
+            } catch (_) {}
+        });
+    } else {
+        sanitizeEditorFormatting(editor, { stripAllColors: true });
+    }
+
+    if (saveState) {
+        saveState.textContent = 'Merged formatting to clean manuscript text';
+    }
+    updateManuscriptStats();
+});
 
 // Rich Text Formatting Buttons
 document.querySelectorAll('[data-command]').forEach((button) => {
@@ -1301,6 +1532,7 @@ document.addEventListener('click', async (e) => {
                 .then(({ data }) => {
                     if (data.latest_version && data.latest_version.content.html) {
                         editor.innerHTML = data.latest_version.content.html;
+                        sanitizeEditorFormatting(editor);
                         saveState.textContent = `Restored version ${data.latest_version.version_number}`;
                         updateManuscriptStats();
                     }

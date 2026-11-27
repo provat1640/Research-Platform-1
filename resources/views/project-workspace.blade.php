@@ -196,8 +196,9 @@
                                 </select>
                                 <label class="editor-color-control" title="Text color">
                                     <span aria-hidden="true">A</span>
-                                    <input type="color" id="editor-text-color" value="#263c42" aria-label="Text color">
+                                    <input type="color" id="editor-text-color" value="#000000" aria-label="Text color">
                                 </label>
+                                <button type="button" id="clear-editor-format" title="Merge / clear text formatting" aria-label="Merge and clear text formatting">T<sub>x</sub></button>
                                 <button type="button" data-command="justifyLeft" title="Align left">≡</button>
                                 <button type="button" data-command="justifyCenter" title="Align center">≡·</button>
                                 <button type="button" data-command="justifyRight" title="Align right">·≡</button>
